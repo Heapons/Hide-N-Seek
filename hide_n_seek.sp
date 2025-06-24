@@ -82,13 +82,13 @@ public void OnLoadoutRefresh(Event event, const char[] name, bool dontBroadcast)
 
     if (g_bIsJuggernaut[client] && TF2_GetPlayerClass(client) == TFClass_Spy)
     {
-        int weapon = GetPlayerWeaponSlot(client, 4); // PDA2 slot
+        int weapon = GetPlayerWeaponSlot(client, 4); // Spy Watch Slot
         if (weapon > MaxClients && IsValidEntity(weapon))
         {
-            int idx = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
-            float value = (idx == 59) ? 1.0 : 2.0;
+            int weapon_index = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+            float attribute_value = (weapon_index == 59) ? 1.0 : 2.0;
 
-            ServerCommand("sig_addattr #%i 48 %f", GetClientUserId(client), value);
+            ServerCommand("sig_addattr #%i 48 %f", GetClientUserId(client), attribute_value);
         }
     }
 }
