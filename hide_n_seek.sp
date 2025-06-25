@@ -7,6 +7,7 @@
 #include <tf2items>
 #include <tf2items_stocks>
 #include <multicolors>
+#include <stocksoup/tf/entity_prefabs>
 
 public Plugin myinfo = 
 {
@@ -48,11 +49,16 @@ static const char g_szGamemodeEntities[][] = {
 
 ConVar g_hJuggernautSteamID;
 ConVar g_hJuggernautMaxHealth;
+ConVar g_hJuggernautSignalInterval;
+ConVar g_hJuggernautSignalDuration;
+Handle g_hJuggernautSignalTimer = null;
 
 public void OnPluginStart()
 {
-    g_hJuggernautSteamID = CreateConVar("sm_arjay_juggernaut", "76561199186248824", "SteamID64 of the only player allowed to be Juggernaut", FCVAR_NONE, true, 0.0, false, 0.0);
-    g_hJuggernautMaxHealth = CreateConVar("sm_arjay_juggernaut_maxhealth", "300", "Max health for Juggernaut's knife (other knives). Kunai gets +55.");
+    g_hJuggernautSteamID = CreateConVar("sm_juggernaut", "76561199186248824", "SteamID64 of the only player allowed to be Juggernaut", FCVAR_NONE, true, 0.0, false, 0.0);
+    g_hJuggernautMaxHealth = CreateConVar("sm_juggernaut_maxhealth", "300", "Max health for Juggernaut.");
+    g_hJuggernautSignalInterval = CreateConVar("sm_juggernaut_signal_interval", "2.0", "Interval in minutes to signal Juggernaut's position with an outline (0 = disabled).");
+    g_hJuggernautSignalDuration = CreateConVar("sm_juggernaut_signal_duration", "3.0", "Duration in seconds for Juggernaut's outline signal.");
 
     AutoExecConfig(true, "hide_n_seek", "arjay");
 
@@ -103,6 +109,8 @@ public void OnMapEnd()
     UnhookEvent("arena_round_start", OnRoundStart);
     UnhookEvent("teamplay_round_win", OnRoundEnd);
     UnhookEvent("post_inventory_application", OnLoadoutRefresh);
+
+    StopJuggernautSignalTimer();
 }
 
 public void OnRoundPreStart(Event event, const char[] name, bool dontBroadcast)
@@ -197,6 +205,9 @@ public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
 
         AcceptEntityInput(entity, "Open");
     }
+
+    // Start Juggernaut signal timer
+    StartJuggernautSignalTimer();
 }
 
 public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
@@ -205,7 +216,16 @@ public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
     {
         if (IsClientInGame(i))
             TF2_ChangeClientTeam(i, (i % 2 == 0) ? TFTeam_Red : TFTeam_Blue);
+
+        if (g_bIsJuggernaut[i])
+        {
+            ServerCommand("sig_addattr #%i 48 0", GetClientUserId(i));
+            ServerCommand("sig_addattr #%i 517 0", GetClientUserId(i));
+        }
     }
+
+    // Stop Juggernaut signal timer
+    StopJuggernautSignalTimer();
 }
 
 public void OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
@@ -251,11 +271,7 @@ public void OnLoadoutRefresh(Event event, const char[] name, bool dontBroadcast)
             }
         }
     }
-    else
-    {
-        ServerCommand("sig_addattr #%i 48 0.0", GetClientUserId(client));
-        ServerCommand("sig_addattr #%i 517 0", GetClientUserId(client));
-    }
+    // Do not reset attributes for RED players here
 }
 
 public Action BlacklistCommands(int client, const char[] command, int argc)
@@ -283,4 +299,62 @@ stock int FindEntityLumpEntryByClassname(const char[] classname, int start = -1)
             return i;
     }
     return -1;
+}
+
+// --- Juggernaut Signal Timer Logic ---
+
+void StartJuggernautSignalTimer()
+{
+    StopJuggernautSignalTimer();
+
+    float interval = g_hJuggernautSignalInterval.FloatValue;
+    if (interval > 0.0)
+    {
+        // Convert minutes to seconds
+        g_hJuggernautSignalTimer = CreateTimer(interval * 60.0, JuggernautSignalTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+    }
+}
+
+void StopJuggernautSignalTimer()
+{
+    if (g_hJuggernautSignalTimer != null)
+    {
+        KillTimer(g_hJuggernautSignalTimer);
+        g_hJuggernautSignalTimer = null;
+    }
+}
+
+public Action JuggernautSignalTimer(Handle timer)
+{
+    int juggernaut = -1;
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (g_bIsJuggernaut[i] && IsClientInGame(i) && IsPlayerAlive(i))
+        {
+            juggernaut = i;
+            break;
+        }
+    }
+
+    if (juggernaut == -1)
+        return Plugin_Continue;
+
+    int glow = TF2_AttachBasicGlow(juggernaut);
+    if (glow != -1 && IsValidEntity(glow))
+    {
+        float duration = g_hJuggernautSignalDuration.FloatValue;
+        CreateTimer(duration, RemoveGlowEntity, EntIndexToEntRef(glow));
+    }
+
+    return Plugin_Continue;
+}
+
+public Action RemoveGlowEntity(Handle timer, any entRef)
+{
+    int entity = EntRefToEntIndex(entRef);
+    if (entity > 0 && IsValidEntity(entity))
+    {
+        AcceptEntityInput(entity, "Kill");
+    }
+    return Plugin_Stop;
 }
