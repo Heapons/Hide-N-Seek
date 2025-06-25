@@ -1,6 +1,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <entitylump>
 #include <tf2>
 #include <tf2_stocks>
 #include <tf2items>
@@ -18,22 +19,106 @@ public Plugin myinfo =
 
 bool g_bIsJuggernaut[MAXPLAYERS+1];
 
+static const char g_szGamemodeEntities[][] = {
+    "tf_gamerules",
+    "tf_logic_arena",
+    "tf_logic_competitive",
+    "tf_logic_mannpower",
+    "tf_logic_multiple_escort",
+    "tf_logic_koth",
+    "tf_logic_medieval",
+    "tf_logic_training_mode",
+    "tf_logic_hybrid_ctf_cp",
+    "tf_logic_raid",
+    "tf_logic_boss_battle",
+    "tf_logic_mann_vs_machine",
+    "tf_logic_holiday",
+    "tf_logic_on_holiday",
+    "tf_logic_minigames",
+    "tf_base_minigame",
+    "tf_halloween_minigame",
+    "tf_halloween_minigame_falling_platforms",
+    "tf_logic_robot_destruction",
+    "tf_logic_player_destruction", 
+    "team_train_watcher",
+    "mapobj_cart_dispenser",
+    "team_control_point",
+    "team_round_timer"
+};
+
+ConVar g_hJuggernautSteamID;
+ConVar g_hJuggernautMaxHealth;
+
+public void OnPluginStart()
+{
+    g_hJuggernautSteamID = CreateConVar("sm_arjay_juggernaut", "76561199186248824", "SteamID64 of the only player allowed to be Juggernaut", FCVAR_NONE, true, 0.0, false, 0.0);
+    g_hJuggernautMaxHealth = CreateConVar("sm_arjay_juggernaut_maxhealth", "300", "Max health for Juggernaut's knife (other knives). Kunai gets +55.");
+
+    AutoExecConfig(true, "hide_n_seek", "arjay");
+
+    AddCommandListener(BlacklistCommands, "kill");
+    AddCommandListener(BlacklistCommands, "explode");
+    //AddCommandListener(BlacklistCommands, "changeteam");
+    AddCommandListener(BlacklistCommands, "jointeam");
+}
+
+public void OnMapInit()
+{
+    for (int i = 0; i < sizeof(g_szGamemodeEntities); i++)
+    {
+        int index = -1;
+        while ((index = FindEntityLumpEntryByClassname(g_szGamemodeEntities[i], index)) != -1)
+        {
+            EntityLump.Erase(index);
+            index--;
+        }
+    }
+
+    int lumpIndex = -1;
+    while ((lumpIndex = FindEntityLumpEntryByClassname("func_respawnroomvisualizer", lumpIndex)) != -1)
+    {
+        EntityLump.Erase(lumpIndex);
+        lumpIndex--;
+    }
+
+    int index = EntityLump.Append();
+    EntityLumpEntry entry = EntityLump.Get(index);
+    entry.Append("classname", "tf_logic_arena");
+    delete entry;
+}
+
 public void OnMapStart()
 {
     SetConVarInt(FindConVar("mp_teams_unbalance_limit"), 0);
 
-    HookEvent("teamplay_round_start", OnRoundStart);
+    HookEvent("teamplay_round_start", OnRoundPreStart);
+    HookEvent("arena_round_start", OnRoundStart);
+    HookEvent("teamplay_round_win", OnRoundEnd);
     HookEvent("post_inventory_application", OnLoadoutRefresh);
 }
 
 public void OnMapEnd()
 {
-    UnhookEvent("teamplay_round_start", OnRoundStart);
+    UnhookEvent("teamplay_round_start", OnRoundPreStart);
+    UnhookEvent("arena_round_start", OnRoundStart);
+    UnhookEvent("teamplay_round_win", OnRoundEnd);
     UnhookEvent("post_inventory_application", OnLoadoutRefresh);
+}
+
+public void OnRoundPreStart(Event event, const char[] name, bool dontBroadcast)
+{
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (IsClientInGame(i))
+        {
+            TF2_ChangeClientTeam(i, TFTeam_Red);
+        }
+    }
 }
 
 public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
 {
+    /* Player Manager */
     int bluePlayer = 0;
     int playerCount = 0;
     int players[MAXPLAYERS+1];
@@ -41,10 +126,28 @@ public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
     for (int i = 1; i <= MaxClients; i++)
         g_bIsJuggernaut[i] = false;
 
+    char allowedSteamID[32];
+    if (g_hJuggernautSteamID != null)
+        g_hJuggernautSteamID.GetString(allowedSteamID, sizeof(allowedSteamID));
+    else
+        allowedSteamID[0] = '\0';
+
     for (int i = 1; i <= MaxClients; i++)
     {
-        if (IsClientInGame(i))
-            players[playerCount++] = i;
+        if (IsClientInGame(i) && !IsFakeClient(i))
+        {
+            if (allowedSteamID[0] != '\0')
+            {
+                char clientSteamID[32];
+                GetClientAuthId(i, AuthId_SteamID64, clientSteamID, sizeof(clientSteamID));
+                if (StrEqual(clientSteamID, allowedSteamID))
+                    players[playerCount++] = i;
+            }
+            else
+            {
+                players[playerCount++] = i;
+            }
+        }
     }
 
     if (playerCount == 0)
@@ -65,12 +168,54 @@ public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
             TF2_SetPlayerClass(client, TFClass_Spy, true, true);
             TF2_RespawnPlayer(client);
         }
-        else
+        else if (TF2_GetClientTeam(client) != TFTeam_Red)
         {
-            if (TF2_GetClientTeam(client) != TFTeam_Red)
-                TF2_ChangeClientTeam(client, TFTeam_Red);
+            TF2_ChangeClientTeam(client, TFTeam_Red);
+
+            int weapon = GetPlayerWeaponSlot(client, 4);
+            if (weapon > MaxClients && IsValidEntity(weapon))
+            {
+                ServerCommand("sig_addattr #%i 48 0.0", GetClientUserId(client));
+            }
         }
     }
+
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (IsClientInGame(i) && !IsFakeClient(i) && !IsPlayerAlive(i))
+        {
+            TF2_RespawnPlayer(i);
+        }
+    }
+
+    /* Forcefully Open All Gates */
+    int entity = -1;
+    while ((entity = FindEntityByClassname(entity, "func_door")) != -1)
+    {
+        if (!IsValidEntity(entity))
+            continue;
+
+        AcceptEntityInput(entity, "Open");
+    }
+}
+
+public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
+{
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (IsClientInGame(i))
+            TF2_ChangeClientTeam(i, (i % 2 == 0) ? TFTeam_Red : TFTeam_Blue);
+    }
+}
+
+public void OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
+{
+    int client = GetClientOfUserId(event.GetInt("userid"));
+
+    if (!IsClientInGame(client))
+        return;
+
+    TF2_ChangeClientTeam(client, TFTeam_Unassigned);
 }
 
 public void OnLoadoutRefresh(Event event, const char[] name, bool dontBroadcast)
@@ -89,6 +234,53 @@ public void OnLoadoutRefresh(Event event, const char[] name, bool dontBroadcast)
             float attribute_value = (weapon_index == 59) ? 1.0 : 2.0;
 
             ServerCommand("sig_addattr #%i 48 %f", GetClientUserId(client), attribute_value);
+
+            int knife = GetPlayerWeaponSlot(client, 2); // Melee Slot
+            if (knife > MaxClients && IsValidEntity(knife))
+            {
+                int knife_index = GetEntProp(knife, Prop_Send, "m_iItemDefinitionIndex");
+                int baseHealth = g_hJuggernautMaxHealth.IntValue;
+                if (knife_index == 356)
+                {
+                    ServerCommand("sig_addattr #%i 517 %d", GetClientUserId(client), baseHealth + 55 - 125);
+                }
+                else
+                {
+                    ServerCommand("sig_addattr #%i 517 %d", GetClientUserId(client), baseHealth - 125);
+                }
+            }
         }
     }
+    else
+    {
+        ServerCommand("sig_addattr #%i 48 0.0", GetClientUserId(client));
+        ServerCommand("sig_addattr #%i 517 0", GetClientUserId(client));
+    }
+}
+
+public Action BlacklistCommands(int client, const char[] command, int argc)
+{
+    if (client > 0 && IsClientInGame(client))
+    {
+        PrintToChat(client, "You may not perform this command.");
+        return Plugin_Handled;
+    }
+    return Plugin_Continue;
+}
+
+/* Helper Functions */
+stock int FindEntityLumpEntryByClassname(const char[] classname, int start = -1)
+{
+    int len = EntityLump.Length();
+    for (int i = start + 1; i < len; i++)
+    {
+        EntityLumpEntry entry = EntityLump.Get(i);
+        char value[64];
+        entry.GetNextKey("classname", value, sizeof(value), -1);
+        bool match = StrEqual(value, classname, false);
+        delete entry;
+        if (match)
+            return i;
+    }
+    return -1;
 }
