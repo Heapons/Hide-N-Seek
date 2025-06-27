@@ -4,8 +4,6 @@
 #include <entitylump>
 #include <tf2>
 #include <tf2_stocks>
-#include <tf2items>
-#include <tf2items_stocks>
 #include <multicolors>
 
 public Plugin myinfo = 
@@ -45,12 +43,18 @@ static const char g_szGamemodeEntities[][] = {
     "team_train_watcher",
     "mapobj_cart_dispenser",
     "team_control_point",
-    "team_round_timer"
+    "team_control_point_master",
+    "team_round_timer",
+    "item_teamflag",
+    "trigger_capture_area"
 };
 
 ConVar g_hJuggernautSteamID;
 ConVar g_hJuggernautMaxHealth;
 ConVar g_hJuggernautSignalInterval;
+ConVar g_hJuggernautSetupTime;
+ConVar g_hJuggernautRoundTime;
+ConVar g_hJuggernautMeleeOnly;
 Handle g_hJuggernautSignalTimer = null;
 
 public void OnPluginStart()
@@ -58,12 +62,17 @@ public void OnPluginStart()
     g_hJuggernautSteamID = CreateConVar("sm_juggernaut", "76561199186248824", "SteamID64 of the only player allowed to be Juggernaut", FCVAR_NONE, true, 0.0, false, 0.0);
     g_hJuggernautMaxHealth = CreateConVar("sm_juggernaut_maxhealth", "300", "Max health for Juggernaut.");
     g_hJuggernautSignalInterval = CreateConVar("sm_juggernaut_signal_interval", "2.0", "Interval in minutes to signal Juggernaut's position with an outline (0 = disabled).");
+    g_hJuggernautSetupTime = CreateConVar("sm_juggernaut_setup_time", "300", "Setup Time length (in seconds).");
+    g_hJuggernautRoundTime = CreateConVar("sm_juggernaut_round_time", "300", "Round Time length (in seconds).");
+    g_hJuggernautMeleeOnly = CreateConVar("sm_juggernaut_melee_only", "1", "Scouts are restricted to Melee.");
 
     AutoExecConfig(true, "hide_n_seek", "arjay");
 }
 
 public void OnMapInit()
 {
+    int lumpIndex = -1;
+
     for (int i = 0; i < sizeof(g_szGamemodeEntities); i++)
     {
         int index = -1;
@@ -74,17 +83,38 @@ public void OnMapInit()
         }
     }
 
-    int lumpIndex = -1;
     while ((lumpIndex = FindEntityLumpEntryByClassname("func_respawnroomvisualizer", lumpIndex)) != -1)
     {
         EntityLump.Erase(lumpIndex);
         lumpIndex--;
     }
 
-    int index = EntityLump.Append();
-    EntityLumpEntry entry = EntityLump.Get(index);
-    entry.Append("classname", "tf_logic_arena");
-    delete entry;
+    while ((lumpIndex = FindEntityLumpEntryByClassname("func_respawnroom", lumpIndex)) != -1)
+    {
+        EntityLump.Erase(lumpIndex);
+        lumpIndex--;
+    }
+
+    while ((lumpIndex = FindEntityLumpEntryByClassname("func_regenerate", lumpIndex)) != -1)
+    {
+        EntityLump.Erase(lumpIndex);
+        lumpIndex--;
+    }
+
+    while ((lumpIndex = FindEntityLumpEntryByClassname("prop_dynamic", lumpIndex)) != -1)
+    {
+        EntityLumpEntry entry = EntityLump.Get(lumpIndex);
+        char model[PLATFORM_MAX_PATH];
+        entry.GetNextKey("model", model, sizeof(model), -1);
+        if (StrEqual(model, "models/props_gameplay/cap_point_base.mdl", false))
+        {
+            EntityLump.Erase(lumpIndex);
+            lumpIndex--;
+        }
+        delete entry;
+    }
+
+    CreateSetupTimer();
 }
 
 public void OnMapStart()
@@ -93,45 +123,76 @@ public void OnMapStart()
 
     SetConVarInt(FindConVar("mp_teams_unbalance_limit"), 0);
 
-    HookEvent("teamplay_round_start", OnRoundPreStart);
-    HookEvent("arena_round_start", OnRoundStart);
+    HookEvent("teamplay_round_start", OnSetupStart);
+    HookEvent("teamplay_setup_finished", OnSetupFinished);
     HookEvent("teamplay_round_win", OnRoundEnd);
-    HookEvent("post_inventory_application", OnLoadoutRefresh);
+    HookEvent("player_spawn", OnPlayerSpawn);
 }
 
 public void OnMapEnd()
-{
-    UnhookEvent("teamplay_round_start", OnRoundPreStart);
-    UnhookEvent("arena_round_start", OnRoundStart);
-    UnhookEvent("teamplay_round_win", OnRoundEnd);
-    UnhookEvent("post_inventory_application", OnLoadoutRefresh);
-
-    StopJuggernautSignalTimer();
-}
-
-public void OnRoundPreStart(Event event, const char[] name, bool dontBroadcast)
 {
     RemoveCommandListener(BlacklistCommands, "kill");
     RemoveCommandListener(BlacklistCommands, "explode");
     RemoveCommandListener(BlacklistCommands, "autoteam");
     RemoveCommandListener(BlacklistCommands, "jointeam");
+    RemoveCommandListener(BlacklistCommands, "joinclass");
 
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (IsClientInGame(i))
-        {
-            TF2_ChangeClientTeam(i, TFTeam_Red);
-        }
-    }
+    UnhookEvent("teamplay_round_start", OnSetupStart);
+    UnhookEvent("teamplay_setup_finished", OnSetupFinished);
+    UnhookEvent("teamplay_round_win", OnRoundEnd);
+    UnhookEvent("player_spawn", OnPlayerSpawn);
+    UnhookEvent("player_death", OnPlayerDeath);
+
+    StopJuggernautSignalTimer();
 }
 
-public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
+public void OnSetupStart(Event event, const char[] name, bool dontBroadcast)
 {
     AddCommandListener(BlacklistCommands, "kill");
     AddCommandListener(BlacklistCommands, "explode");
     AddCommandListener(BlacklistCommands, "autoteam");
     AddCommandListener(BlacklistCommands, "jointeam");
+    AddCommandListener(BlacklistCommands, "joinclass");
 
+    int entity = -1;
+    while ((entity = FindEntityByClassname(entity, "func_door")) != -1 ||
+           (entity = FindEntityByClassname(entity, "func_movelinear")) != -1)
+    {
+        AcceptEntityInput(entity, "Open");
+    }
+
+    char allowedSteamID[32];
+    if (g_hJuggernautSteamID != null)
+        g_hJuggernautSteamID.GetString(allowedSteamID, sizeof(allowedSteamID));
+    else
+        allowedSteamID[0] = '\0';
+
+    // Assign teams: Only the juggernaut is BLU, everyone else is RED
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (IsClientInGame(i))
+        {
+            char clientSteamID[32];
+            GetClientAuthId(i, AuthId_SteamID64, clientSteamID, sizeof(clientSteamID));
+            if (StrEqual(clientSteamID, allowedSteamID))
+            {
+                TF2_ChangeClientTeam(i, TFTeam_Blue);
+                TF2_SetPlayerClass(i, TFClass_Spy, true, true);
+                TF2_RespawnPlayer(i);
+            }
+            else
+            {
+                TF2_ChangeClientTeam(i, TFTeam_Red);
+                TF2_SetPlayerClass(i, TFClass_Scout, true, true);
+                TF2_RespawnPlayer(i);
+                TF2_AddCondition(i, TFCond_FreezeInput, float(g_hJuggernautSetupTime.IntValue));
+            }
+        }
+    }
+}
+
+public void OnSetupFinished(Event event, const char[] name, bool dontBroadcast)
+{
     int bluePlayer = 0;
 
     for (int i = 1; i <= MaxClients; i++)
@@ -163,7 +224,7 @@ public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
 
     g_bIsJuggernaut[bluePlayer] = true;
 
-    // --- Fix: Only change team/class if needed, and respawn only if team/class changed ---
+    // Ensure only the juggernaut is BLU, everyone else is RED
     for (int i = 1; i <= MaxClients; i++)
     {
         if (!IsClientInGame(i))
@@ -171,66 +232,43 @@ public void OnRoundStart(Event event, const char[] name, bool dontBroadcast)
 
         if (i == bluePlayer)
         {
-            if (TF2_GetClientTeam(i) != TFTeam_Blue)
-            {
-                TF2_ChangeClientTeam(i, TFTeam_Blue);
-            }
-            
-            if (TF2_GetPlayerClass(i) != TFClass_Spy)
-            {
-                TF2_SetPlayerClass(i, TFClass_Spy, true, true);
-            }
-            
-            if (!IsPlayerAlive(i))
-            {
-                TF2_RespawnPlayer(i);
-            }
+            TF2_ChangeClientTeam(i, TFTeam_Blue);
+            TF2_SetPlayerClass(i, TFClass_Spy, true, true);
         }
         else
         {
-            bool changed = false;
-            if (TF2_GetClientTeam(i) != TFTeam_Red)
-            {
-                TF2_ChangeClientTeam(i, TFTeam_Red);
-                changed = true;
-            }
-
-            if (changed || !IsPlayerAlive(i))
-            {
-                TF2_RespawnPlayer(i);
-            }
+            TF2_ChangeClientTeam(i, TFTeam_Red);
+            TF2_SetPlayerClass(i, TFClass_Scout, true, true);
+            TF2_RespawnPlayer(i);
         }
+
+        float vecOrigin[3], vecAngles[3];
+        GetClientAbsOrigin(i, vecOrigin);
+        GetClientAbsAngles(i, vecAngles);
+        TF2_RespawnPlayer(i);
+        TeleportEntity(i, vecOrigin, vecAngles, NULL_VECTOR);
+
+        TF2_AddCondition(i, TFCond_HalloweenQuickHeal, 3.0);
     }
 
-    /* Forcefully Open All Gates */
-    int entity = -1;
-    while ((entity = FindEntityByClassname(entity, "func_door")) != -1)
-    {
-        if (!IsValidEntity(entity))
-            continue;
-
-        AcceptEntityInput(entity, "Open");
-    }
-
-    // Start Juggernaut signal timer
     StartJuggernautSignalTimer();
+
+    HookEvent("player_death", OnPlayerDeath);
 }
 
 public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
+    UnhookEvent("player_death", OnPlayerDeath);
+
     for (int i = 1; i <= MaxClients; i++)
     {
         if (IsClientInGame(i))
-            TF2_ChangeClientTeam(i, (i % 2 == 0) ? TFTeam_Red : TFTeam_Blue);
-
-        if (g_bIsJuggernaut[i])
         {
-            ServerCommand("sig_addattr #%i 48 0", GetClientUserId(i));
-            ServerCommand("sig_addattr #%i 517 0", GetClientUserId(i));
+            //TF2_RemoveAttribute(i, "set cloak is movement based");
+            TF2_RemoveAttribute(i, "SET BONUS: max health additive bonus");
         }
     }
 
-    // Stop Juggernaut signal timer
     StopJuggernautSignalTimer();
 }
 
@@ -241,50 +279,115 @@ public void OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
     if (!IsClientInGame(client))
         return;
 
+    char allowedSteamID[32];
+    if (g_hJuggernautSteamID != null)
+        g_hJuggernautSteamID.GetString(allowedSteamID, sizeof(allowedSteamID));
+    else
+        allowedSteamID[0] = '\0';
+
+    char clientSteamID[32];
+    GetClientAuthId(client, AuthId_SteamID64, clientSteamID, sizeof(clientSteamID));
+
+    // End round if Juggernaut (BLU) dies
+    if (StrEqual(clientSteamID, allowedSteamID))
+    {
+        int entity = CreateEntityByName("game_round_win");
+        if (entity != -1)
+        {
+            DispatchKeyValue(entity, "force_map_reset", "1");
+            SetEntProp(entity, Prop_Data, "m_iTeamNum", TFTeam_Red);
+            AcceptEntityInput(entity, "RoundWin");
+            RemoveEntity(entity);
+        }
+        return;
+    }
+
     TF2_ChangeClientTeam(client, TFTeam_Unassigned);
 }
 
-public void OnLoadoutRefresh(Event event, const char[] name, bool dontBroadcast)
+public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 {
     int client = GetClientOfUserId(event.GetInt("userid"));
 
     if (!IsClientInGame(client) || !IsPlayerAlive(client))
         return;
 
+    char allowedSteamID[32];
+    if (g_hJuggernautSteamID != null)
+        g_hJuggernautSteamID.GetString(allowedSteamID, sizeof(allowedSteamID));
+    else
+        allowedSteamID[0] = '\0';
+
+    char clientSteamID[32];
+    GetClientAuthId(client, AuthId_SteamID64, clientSteamID, sizeof(clientSteamID));
+
+    // If not the juggernaut, force to RED and Scout
+    if (!StrEqual(clientSteamID, allowedSteamID))
+    {
+        TF2_ChangeClientTeam(client, TFTeam_Red);
+        TF2_SetPlayerClass(client, TFClass_Scout, true, true);
+    }
+
+    // Strip RED team of primary and secondary weapons using TF2_RemoveWeaponSlot for safety
+    if (TF2_GetClientTeam(client) == TFTeam_Red)
+    {
+        if (g_hJuggernautMeleeOnly.BoolValue)
+        {
+            TF2_RemoveWeaponSlot(client, 0); // Primary
+            TF2_RemoveWeaponSlot(client, 1); // Secondary
+        }
+        else
+        {
+            TF2_AddAttribute(client, "hit self on miss");
+        }
+    }
+
+    CreateTimer(0.1, Timer_JuggernautSetup, client);
+}
+
+public Action Timer_JuggernautSetup(Handle timer, int client)
+{
     if (g_bIsJuggernaut[client] && TF2_GetPlayerClass(client) == TFClass_Spy)
     {
         int weapon = GetPlayerWeaponSlot(client, 4); // Spy Watch Slot
         if (weapon > MaxClients && IsValidEntity(weapon))
         {
             int weapon_index = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
-            float attribute_value = (weapon_index == 59) ? 1.0 : 2.0;
 
-            ServerCommand("sig_addattr #%i 48 %f", GetClientUserId(client), attribute_value);
+            //TF2_AddAttribute(client, "set cloak is movement based", weapon_index == 59 ? 1.0 : 2.0);
 
             int knife = GetPlayerWeaponSlot(client, 2); // Melee Slot
             if (knife > MaxClients && IsValidEntity(knife))
             {
                 int knife_index = GetEntProp(knife, Prop_Send, "m_iItemDefinitionIndex");
                 int baseHealth = g_hJuggernautMaxHealth.IntValue;
+
                 if (knife_index == 356)
                 {
-                    ServerCommand("sig_addattr #%i 517 %d", GetClientUserId(client), baseHealth + 55 - 125);
+                    TF2_AddAttribute(client, "SET BONUS: max health additive bonus", float(baseHealth + 55 - 125));
                 }
                 else
                 {
-                    ServerCommand("sig_addattr #%i 517 %d", GetClientUserId(client), baseHealth - 125);
+                    TF2_AddAttribute(client, "SET BONUS: max health additive bonus", float(baseHealth - 125));
                 }
             }
         }
+
+        TF2_RemoveAttribute(client, "hit self on miss");
     }
-    // Do not reset attributes for RED players here
+
+    return Plugin_Stop;
 }
 
 public Action BlacklistCommands(int client, const char[] command, int argc)
 {
     if (client > 0 && IsClientInGame(client) && TF2_GetClientTeam(client) != TFTeam_Spectator)
     {
-        PrintToChat(client, "You may not perform this command.");
+        PrintToChat(client, "You can't perform this command.");
+        if (StrEqual(command, "kill", false) || StrEqual(command, "explode", false))
+        {
+            TF2_ChangeClientTeam(client, TFTeam_Unassigned);
+        }
         return Plugin_Handled;
     }
     return Plugin_Continue;
@@ -309,8 +412,6 @@ stock int FindEntityLumpEntryByClassname(const char[] classname, int start = -1)
 
 void StartJuggernautSignalTimer()
 {
-    StopJuggernautSignalTimer();
-
     float interval = g_hJuggernautSignalInterval.FloatValue;
     if (interval > 0.0)
     {
@@ -352,3 +453,10 @@ public Action JuggernautSignalTimer(Handle timer)
 
     return Plugin_Continue;
 }
+
+public void OnClientPutInServer(int client)
+{
+    TF2_SetPlayerClass(client, TFClass_Scout, true, true);
+}
+
+#include "arjay/stocks.sp"
