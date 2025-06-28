@@ -122,6 +122,7 @@ public void OnMapStart()
     PrecacheSound(MEDIC_ALERT, true);
 
     SetConVarInt(FindConVar("mp_teams_unbalance_limit"), 0);
+    FindConVar("mp_forceautoteam").SetBool(true);
 
     HookEvent("teamplay_round_start", OnSetupStart);
     HookEvent("teamplay_setup_finished", OnSetupFinished);
@@ -137,6 +138,7 @@ public void OnMapStart()
         AcceptEntityInput(ent, "Open");
     }
     // ------------------------------------------------
+
 }
 
 public void OnMapEnd()
@@ -172,7 +174,7 @@ public void OnSetupStart(Event event, const char[] name, bool dontBroadcast)
 
     for (int i = 1; i <= MaxClients; i++)
     {
-        if (!IsClientInGame(i))
+        if (!IsClientInGame(i) || IsClientSourceTV(i))
             continue;
 
         char clientSteamID[32];
@@ -181,14 +183,13 @@ public void OnSetupStart(Event event, const char[] name, bool dontBroadcast)
         {
             TF2_ChangeClientTeam(i, TFTeam_Blue);
             TF2_SetPlayerClass(i, TFClass_Spy, true, true);
-            TF2_RespawnPlayer(i);
-
             CreateTimer(1.0, OnJuggernautSpawn, i);
+            TF2_RespawnPlayer(i);
         }
         else
         {
             TF2_ChangeClientTeam(i, TFTeam_Unassigned);
-            UTIL_ScreenFade(i, { 0, 0, 0, 255 }, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
+            UTIL_ScreenFade(i, {0, 0, 0, 255}, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
         }
     }
 
@@ -210,6 +211,8 @@ public void OnSetupStart(Event event, const char[] name, bool dontBroadcast)
 
 public void OnSetupFinished(Event event, const char[] name, bool dontBroadcast)
 {
+    HookEvent("player_death", OnPlayerDeath, EventHookMode_PostNoCopy);
+    
     int bluePlayer = 0;
 
     for (int i = 1; i <= MaxClients; i++)
@@ -244,11 +247,12 @@ public void OnSetupFinished(Event event, const char[] name, bool dontBroadcast)
     // Respawn all dead RED players as Heavy
     for (int i = 1; i <= MaxClients; i++)
     {
-        if (!IsClientInGame(i))
+        if (!IsClientInGame(i) || IsClientSourceTV(i))
             continue;
 
         if (TF2_GetClientTeam(i) != TFTeam_Blue)
         {
+            TF2_ChangeClientTeam(i, TFTeam_Red);
             TF2_SetPlayerClass(i, TFClass_Heavy, true, true);
             TF2_RespawnPlayer(i);
         }
@@ -279,13 +283,11 @@ public void OnSetupFinished(Event event, const char[] name, bool dontBroadcast)
     }*/
 
     StartJuggernautSignalTimer();
-
-    HookEvent("player_death", OnPlayerDeath);
 }
 
 public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
-    UnhookEvent("player_death", OnPlayerDeath);
+    UnhookEvent("player_death", OnPlayerDeath, EventHookMode_PostNoCopy);
     StopJuggernautSignalTimer();
 }
 
@@ -341,7 +343,7 @@ public void OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
     }
 
     TF2_ChangeClientTeam(client, TFTeam_Unassigned);
-    UTIL_ScreenFade(client, { 0, 0, 0, 255 }, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
+    UTIL_ScreenFade(client, {0, 0, 0, 255}, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
 }
 
 public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
@@ -383,7 +385,7 @@ public Action BlacklistCommands(int client, const char[] command, int argc)
         if (StrEqual(command, "kill", false) || StrEqual(command, "explode", false))
         {
             TF2_ChangeClientTeam(client, TFTeam_Unassigned);
-            UTIL_ScreenFade(client, { 0, 0, 0, 255 }, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
+            UTIL_ScreenFade(client, {0, 0, 0, 255}, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
         }
         return Plugin_Handled;
     }
@@ -483,7 +485,9 @@ public Action JuggernautSignalTimer(Handle timer)
 
 public void OnClientPutInServer(int client)
 {
+    //TF2_ChangeClientTeam(client, TFTeam_Unassigned);
     TF2_SetPlayerClass(client, TFClass_Heavy, true, true);
+    //UTIL_ScreenFade(client, {0, 0, 0, 255}, 2.0, 5.0, FFADE_OUT|FFADE_STAYOUT);
 }
 
 #include "arjay/stocks.sp"
