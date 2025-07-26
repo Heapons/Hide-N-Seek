@@ -1,8 +1,10 @@
 # Hide'N'Seek
 Commissioned by [ArJay<br>![](https://yt3.googleusercontent.com/eNw5kvPjHEngIYS0RuVJgI-UOpRSqGt93QClui3BQ7axJPLIWl_wNXdtiJx3tLjt7qV89EZtlio=s160-c-k-c0x00ffffff-no-rj)](https://www.youtube.com/@ArJayTF2)
-
-This requires no dependencies (and also works on **64-bit** servers‼)
-
+> [!NOTE]
+> This requires no dependencies (and also works on **64-bit** servers‼)
+# TF2: 100 Heavies vs 1 Spy
+[![TF2: 100 Heavies vs 1 Spy](https://github.com/user-attachments/assets/b36e70e1-0493-44c7-b8af-5cba2c0431de)
+](https://www.youtube.com/watch?v=8cFCJZa1Sg4)
 # Game Rules
 ## General
 - The game pits 1 BLU player against the entirety of RED team. And there are two ways to end a round:
